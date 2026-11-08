@@ -30,6 +30,7 @@ TEXT = (222, 230, 247)
 MUTED = (125, 138, 168)
 ACCENT = (94, 234, 212)
 TRAIL = np.array((105, 70, 190))
+FLAT = np.array((70, 195, 255))  # live-cell colour while stepping manually
 
 # Cell colour by age: newborn = bright white, mature = cyan -> violet -> magenta.
 _AGE_STOPS = [1, 3, 12, 30, 63]
@@ -98,6 +99,7 @@ class App:
         self.speed_idx = DEFAULT_SPEED
         self.acc = 0.0
         self.show_grid = True
+        self.manual = False  # True after a manual step: effects (age colour, glow) are off
         self.show_help = True
         self.tool = "draw"  # or "stamp"
         self.selected = 0
@@ -153,7 +155,11 @@ class App:
         self.history.clear()
         self.running = False
 
-    def step(self) -> None:
+    def step(self, manual: bool = False) -> None:
+        """Advance one generation. Manual steps (Step button / N) show flat colours."""
+        if self.manual and not manual:
+            self.life.ghost[:] = 0  # drop stale glow when continuous play resumes
+        self.manual = manual
         self.life.step()
         self.history.append(self.life.population)
 
@@ -229,7 +235,7 @@ class App:
                 self.running = not self.running
             elif k in (pygame.K_n, pygame.K_RIGHT):
                 self.running = False
-                self.step()
+                self.step(manual=True)
                 self.hold_start = self.hold_last = time.monotonic()
             elif k in (pygame.K_UP, pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
                 self.change_speed(+1)
@@ -308,7 +314,7 @@ class App:
                 self.running = not self.running
             elif self.btn_step.collidepoint(pos):
                 self.running = False
-                self.step()
+                self.step(manual=True)
             elif self.btn_clear.collidepoint(pos):
                 self.clear()
             elif self.btn_random.collidepoint(pos):
@@ -351,10 +357,14 @@ class App:
 
     def render_board(self) -> None:
         life, cs = self.life, self.cs
-        glow = (life.ghost[..., None] * 0.55).astype(np.float32)
-        rgb = BG + (TRAIL - BG) * glow
         alive = life.cells
-        rgb[alive] = AGE_LUT[np.minimum(life.age[alive], 63)]
+        if self.manual:  # stepping: crisp board, one flat colour, no trails
+            rgb = np.broadcast_to(BG, (ROWS, COLS, 3)).copy()
+            rgb[alive] = FLAT
+        else:
+            glow = (life.ghost[..., None] * 0.55).astype(np.float32)
+            rgb = BG + (TRAIL - BG) * glow
+            rgb[alive] = AGE_LUT[np.minimum(life.age[alive], 63)]
         pygame.surfarray.blit_array(self.board_surf, np.ascontiguousarray(rgb.astype(np.uint8).swapaxes(0, 1)))
 
         # Only scale the part of the board that is visible.
@@ -522,7 +532,7 @@ class App:
                 now = time.monotonic()
                 if (keys[pygame.K_n] or keys[pygame.K_RIGHT]) and not self.show_help \
                         and now - self.hold_start > 0.35 and now - self.hold_last > 0.05:
-                    self.step()
+                    self.step(manual=True)
                     self.hold_last = now
 
             self.render()
