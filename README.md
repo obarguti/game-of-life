@@ -59,6 +59,8 @@ Neighbours are the 8 surrounding cells. From these rules come still lifes, oscil
 
 - **Age colouring**: newborn cells flash white and shift to blue, then violet, so you can see what is stable.
 - **Fading trails**: a purple glow marks where cells recently died, making motion visible.
+- **Step transition**: each manual step fades newborn cells green to blue and dying cells red to black over ~0.45 s.
+- **Neighbour counts**: zoomed in (3x+) and paused, each cell shows its live-neighbour count. A red box means it dies next step; a green box means a dead cell will be born.
 - **Wrap-around vs. walls**: gliders either loop forever or crash at the edge.
 - **Population graph** and a status badge (Running / Paused / Stable / Extinct).
 - **Methuselahs**: R-pentomino, Acorn and Diehard are tiny starts with very long, chaotic lives.

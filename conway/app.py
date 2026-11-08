@@ -31,6 +31,10 @@ MUTED = (125, 138, 168)
 ACCENT = (94, 234, 212)
 TRAIL = np.array((105, 70, 190))
 FLAT = np.array((70, 195, 255))  # live-cell colour while stepping manually
+RED = np.array((255, 90, 90))     # just died
+GREEN = np.array((90, 230, 120))  # just born
+ANIM_SECS = 0.45                  # length of the per-step transition
+COUNT_MIN_CS = 20                 # show neighbour counts at this zoom (pixels per cell) or more
 
 # Cell colour by age: newborn = bright white, mature = cyan -> violet -> magenta.
 _AGE_STOPS = [1, 3, 12, 30, 63]
@@ -66,6 +70,7 @@ HELP_LINES = [
     ("", None),
     ("Colours: new cells flash white and age to blue and violet.", "m"),
     ("The faint purple glow is where cells recently died.", "m"),
+    ("Zoomed in (3x+), numbers show live neighbours: red box = dies next, green = born.", "m"),
     ("", None),
     ("Press H or click anywhere to start.", "a"),
 ]
@@ -99,6 +104,9 @@ class App:
         self.speed_idx = DEFAULT_SPEED
         self.acc = 0.0
         self.show_grid = True
+        self.anim = None  # (born mask, died mask, start time) for the manual-step transition
+        self._count_fonts: dict[int, pygame.font.Font] = {}
+        self._digits: dict[tuple, pygame.Surface] = {}
         self.manual = False  # True after a manual step: effects (age colour, glow) are off
         self.show_help = True
         self.tool = "draw"  # or "stamp"
@@ -148,19 +156,24 @@ class App:
             self.stamp_cells = sc.cells
         self.history.clear()
         self.running = False
+        self.anim = None
         self.acc = 0.0
 
     def clear(self) -> None:
         self.life.clear()
         self.history.clear()
         self.running = False
+        self.anim = None
 
     def step(self, manual: bool = False) -> None:
         """Advance one generation. Manual steps (Step button / N) show flat colours."""
         if self.manual and not manual:
             self.life.ghost[:] = 0  # drop stale glow when continuous play resumes
         self.manual = manual
+        prev = self.life.cells.copy()
         self.life.step()
+        new = self.life.cells
+        self.anim = (new & ~prev, prev & ~new, time.monotonic()) if manual else None
         self.history.append(self.life.population)
 
     def speed(self) -> float:
@@ -355,12 +368,53 @@ class App:
                 pygame.draw.line(self._grid_surf, colour, (0, y), (GRID_W, y))
         return self._grid_surf
 
+    def digit(self, k: int, colour) -> pygame.Surface:
+        key = (self.cs, k, colour)
+        if key not in self._digits:
+            font = self._count_fonts.setdefault(
+                self.cs, pygame.font.SysFont("segoeui,arial,helvetica", int(self.cs * 0.55), bold=True))
+            self._digits[key] = font.render(str(k), True, colour)
+        return self._digits[key]
+
+    def draw_counts(self, r0: int, r1: int, c0: int, c1: int) -> None:
+        """When zoomed in and not running, print each cell's live-neighbour count.
+
+        A red box marks a live cell that will die next step; a green box marks a dead
+        cell with exactly 3 neighbours, which will be born.
+        """
+        cs = self.cs
+        if cs < COUNT_MIN_CS or self.running or self.show_help:
+            return
+        counts, alive = self.life._neighbour_counts(), self.life.cells
+        for r in range(r0, r1):
+            for c in range(c0, c1):
+                k, a = int(counts[r, c]), bool(alive[r, c])
+                if k == 0 and not a:
+                    continue
+                x, y = self.cell_to_screen(r, c)
+                if a and k not in (2, 3):
+                    pygame.draw.rect(self.screen, tuple(RED), (x, y, cs, cs), 3)
+                elif not a and k == 3:
+                    pygame.draw.rect(self.screen, tuple(GREEN), (x, y, cs, cs), 3)
+                colour = (10, 20, 30) if a else (tuple(GREEN) if k == 3 else (150, 160, 190))
+                d = self.digit(k, colour)
+                self.screen.blit(d, d.get_rect(center=(x + cs // 2, y + cs // 2)))
+
     def render_board(self) -> None:
         life, cs = self.life, self.cs
         alive = life.cells
         if self.manual:  # stepping: crisp board, one flat colour, no trails
             rgb = np.broadcast_to(BG, (ROWS, COLS, 3)).copy()
             rgb[alive] = FLAT
+            if self.anim:  # quick fade: red -> black for deaths, green -> blue for births
+                born, died, t0 = self.anim
+                t = (time.monotonic() - t0) / ANIM_SECS
+                if t >= 1:
+                    self.anim = None
+                else:
+                    t = t * t * (3 - 2 * t)
+                    rgb[died & ~alive] = RED + (BG - RED) * t
+                    rgb[born & alive] = GREEN + (FLAT - GREEN) * t
         else:
             glow = (life.ghost[..., None] * 0.55).astype(np.float32)
             rgb = BG + (TRAIL - BG) * glow
@@ -388,6 +442,7 @@ class App:
             else:
                 x, y = self.cell_to_screen(*cell)
                 pygame.draw.rect(self.screen, ACCENT, (x, y, cs, cs), 1)
+        self.draw_counts(r0, r1, c0, c1)
         self.screen.set_clip(None)
 
         if cs > ZOOMS[0]:
