@@ -9,6 +9,7 @@ import numpy as np
 import pygame
 
 from .engine import Life
+from . import __version__
 from .patterns import SCENARIOS, rotate
 
 # ---- layout -----------------------------------------------------------------
@@ -407,6 +408,8 @@ class App:
             colour = {"h": ACCENT, "m": MUTED, "a": (255, 214, 120)}.get(style, TEXT)
             self.text(line, (110, y), mono, colour)
             y += 24
+        label = f"v{__version__}"
+        self.text(label, (WIN_W - 16 - self.small.size(label)[0], 16), self.small, MUTED)
 
     def render(self) -> None:
         self.screen.fill(BG)
