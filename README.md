@@ -41,7 +41,11 @@ Neighbours are the 8 surrounding cells. From these rules come still lifes, oscil
 | Right mouse | Erase |
 | Space | Play / pause |
 | N or Right arrow | Step one generation (hold to repeat) |
-| Up / Down, `+` / `-`, mouse wheel, slider | Speed (0.5 - 240 gen/s) |
+| Up / Down, `+` / `-`, slider | Speed (0.5 - 240 gen/s) |
+| Scroll wheel (vertical) | Zoom in/out around the cursor (1x - 5x) |
+| Horizontal scroll, or Shift + wheel | Speed |
+| Middle-drag, or Shift + left-drag | Pan when zoomed in |
+| Home or F | Reset zoom to the full board |
 | 1-9, 0 | Load scenario |
 | X | Random soup |
 | T / R | Toggle draw/stamp tool / rotate stamp |

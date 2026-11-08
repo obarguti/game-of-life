@@ -20,6 +20,7 @@ WIN_W, WIN_H = GRID_W + SIDEBAR_W, GRID_H + BAR_H
 
 SPEEDS = [0.5, 1, 2, 5, 10, 20, 30, 60, 120, 240]  # generations per second
 DEFAULT_SPEED = 4
+ZOOMS = [8, 10, 12, 16, 20, 24, 32, 40]  # pixels per cell; 8 = whole board visible
 
 # ---- palette ----------------------------------------------------------------
 BG = np.array((11, 15, 26))
@@ -55,6 +56,8 @@ HELP_LINES = [
     ("  Left mouse   draw / stamp         Right mouse   erase", None),
     ("  SPACE        play / pause         N or RIGHT    step (hold to repeat)", None),
     ("  UP / DOWN    speed                1-9, 0        load scenario", None),
+    ("  Wheel        zoom in / out        H-scroll      speed (or Shift+wheel)", None),
+    ("  Middle-drag  pan (or Shift+drag)  Home / F      reset zoom", None),
     ("  T            draw <-> stamp tool  R             rotate stamp", None),
     ("  X            random soup          C             clear board", None),
     ("  W            wrap edges on/off    G             grid lines", None),
@@ -107,11 +110,13 @@ class App:
         self.hold_last = 0.0
 
         self.board_surf = pygame.Surface((COLS, ROWS))
-        self.grid_overlay = pygame.Surface((GRID_W, GRID_H), pygame.SRCALPHA)
-        for x in range(0, GRID_W, CELL):
-            pygame.draw.line(self.grid_overlay, (255, 255, 255, 9), (x, 0), (x, GRID_H))
-        for y in range(0, GRID_H, CELL):
-            pygame.draw.line(self.grid_overlay, (255, 255, 255, 9), (0, y), (GRID_W, y))
+        # view: cs = pixels per cell, (ox, oy) = pixel offset of the viewport into the board
+        self.cs = ZOOMS[0]
+        self.ox = self.oy = 0
+        self.panning = False
+        self.wheel_x = self.wheel_y = 0.0
+        self._grid_key = None
+        self._grid_surf = pygame.Surface((GRID_W, GRID_H), pygame.SRCALPHA)
 
         # clickable rectangles
         self.btn_play = pygame.Rect(12, GRID_H + 8, 104, 36)
@@ -168,11 +173,34 @@ class App:
         frac = (x - self.slider.left) / self.slider.width
         self.speed_idx = max(0, min(len(SPEEDS) - 1, round(frac * (len(SPEEDS) - 1))))
 
+    # ---- view (zoom / pan) --------------------------------------------------
+    def clamp_view(self) -> None:
+        self.ox = max(0, min(COLS * self.cs - GRID_W, self.ox))
+        self.oy = max(0, min(ROWS * self.cs - GRID_H, self.oy))
+
+    def zoom_by(self, steps: int, anchor: tuple[int, int]) -> None:
+        """Zoom in (+) or out (-), keeping the board point under `anchor` fixed."""
+        idx = max(0, min(len(ZOOMS) - 1, ZOOMS.index(self.cs) + steps))
+        new = ZOOMS[idx]
+        if new == self.cs:
+            return
+        ax, ay = anchor if self.cell_at(anchor) else (GRID_W // 2, GRID_H // 2)
+        wx, wy = (ax + self.ox) / self.cs, (ay + self.oy) / self.cs  # in cell units
+        self.cs = new
+        self.ox, self.oy = round(wx * new - ax), round(wy * new - ay)
+        self.clamp_view()
+
+    def reset_view(self) -> None:
+        self.cs, self.ox, self.oy = ZOOMS[0], 0, 0
+
+    def cell_to_screen(self, r: int, c: int) -> tuple[int, int]:
+        return c * self.cs - self.ox, r * self.cs - self.oy
+
     # ---- input --------------------------------------------------------------
     def cell_at(self, pos) -> tuple[int, int] | None:
         x, y = pos
         if 0 <= x < GRID_W and 0 <= y < GRID_H:
-            return y // CELL, x // CELL
+            return (y + self.oy) // self.cs, (x + self.ox) // self.cs
         return None
 
     def stamp_origin(self, cell: tuple[int, int]) -> tuple[int, int]:
@@ -217,6 +245,8 @@ class App:
                 self.life.wrap = not self.life.wrap
             elif k == pygame.K_h:
                 self.show_help = True
+            elif k in (pygame.K_HOME, pygame.K_f):
+                self.reset_view()
             elif k == pygame.K_t:
                 self.toggle_tool()
             elif k == pygame.K_r and self.stamp_cells is not None:
@@ -226,15 +256,36 @@ class App:
                 if idx < len(SCENARIOS):
                     self.load_scenario(idx)
         elif e.type == pygame.MOUSEWHEEL:
-            self.change_speed(1 if e.y > 0 else -1)
-        elif e.type == pygame.MOUSEBUTTONDOWN and e.button in (1, 3):
+            if self.show_help:
+                return True
+            # Vertical wheel = zoom. Horizontal wheel (or Shift + wheel) = speed.
+            shift = pygame.key.get_mods() & pygame.KMOD_SHIFT
+            dx, dy = e.precise_x, e.precise_y
+            if shift and not dx:
+                dx, dy = dy, 0.0
+            self.wheel_x += dx
+            self.wheel_y += dy
+            while abs(self.wheel_y) >= 1:
+                step = 1 if self.wheel_y > 0 else -1
+                self.zoom_by(step, pygame.mouse.get_pos())
+                self.wheel_y -= step
+            while abs(self.wheel_x) >= 1:
+                step = 1 if self.wheel_x > 0 else -1
+                self.change_speed(step)
+                self.wheel_x -= step
+        elif e.type == pygame.MOUSEBUTTONDOWN and e.button in (1, 2, 3):
             self.on_mouse_down(e)
         elif e.type == pygame.MOUSEBUTTONUP:
             self.paint_value = None
             self.last_cell = None
             self.dragging_slider = False
+            self.panning = False
         elif e.type == pygame.MOUSEMOTION:
-            if self.dragging_slider:
+            if self.panning:
+                self.ox -= e.rel[0]
+                self.oy -= e.rel[1]
+                self.clamp_view()
+            elif self.dragging_slider:
                 self.set_slider(e.pos[0])
             elif self.paint_value is not None:
                 cell = self.cell_at(e.pos)
@@ -248,6 +299,10 @@ class App:
             self.show_help = False
             return
         pos = e.pos
+        shift = pygame.key.get_mods() & pygame.KMOD_SHIFT
+        if e.button == 2 or (e.button == 1 and shift and self.cell_at(pos)):
+            self.panning = True
+            return
         if e.button == 1:
             if self.btn_play.collidepoint(pos):
                 self.running = not self.running
@@ -282,27 +337,55 @@ class App:
             self.life.set_cell(*cell, self.paint_value)
 
     # ---- drawing ------------------------------------------------------------
+    def grid_overlay(self) -> pygame.Surface:
+        key = (self.cs, self.ox % self.cs, self.oy % self.cs)
+        if key != self._grid_key:
+            self._grid_key = key
+            self._grid_surf.fill((0, 0, 0, 0))
+            colour = (255, 255, 255, 9 if self.cs <= 8 else 22)
+            for x in range(-(self.ox % self.cs), GRID_W, self.cs):
+                pygame.draw.line(self._grid_surf, colour, (x, 0), (x, GRID_H))
+            for y in range(-(self.oy % self.cs), GRID_H, self.cs):
+                pygame.draw.line(self._grid_surf, colour, (0, y), (GRID_W, y))
+        return self._grid_surf
+
     def render_board(self) -> None:
-        life = self.life
+        life, cs = self.life, self.cs
         glow = (life.ghost[..., None] * 0.55).astype(np.float32)
         rgb = BG + (TRAIL - BG) * glow
         alive = life.cells
         rgb[alive] = AGE_LUT[np.minimum(life.age[alive], 63)]
         pygame.surfarray.blit_array(self.board_surf, np.ascontiguousarray(rgb.astype(np.uint8).swapaxes(0, 1)))
-        self.screen.blit(pygame.transform.scale(self.board_surf, (GRID_W, GRID_H)), (0, 0))
+
+        # Only scale the part of the board that is visible.
+        c0, r0 = self.ox // cs, self.oy // cs
+        c1 = min(COLS, -(-(self.ox + GRID_W) // cs))
+        r1 = min(ROWS, -(-(self.oy + GRID_H) // cs))
+        part = self.board_surf.subsurface((c0, r0, c1 - c0, r1 - r0))
+        self.screen.set_clip((0, 0, GRID_W, GRID_H))
+        self.screen.blit(pygame.transform.scale(part, ((c1 - c0) * cs, (r1 - r0) * cs)), self.cell_to_screen(r0, c0))
         if self.show_grid:
-            self.screen.blit(self.grid_overlay, (0, 0))
+            self.screen.blit(self.grid_overlay(), (0, 0))
 
         cell = self.cell_at(pygame.mouse.get_pos())
-        if cell and not self.show_help:
+        if cell and not self.show_help and not self.panning:
             if self.tool == "stamp" and self.stamp_cells is not None:
-                r0, c0 = self.stamp_origin(cell)
-                ghost = pygame.Surface((CELL, CELL), pygame.SRCALPHA)
+                sr, sc = self.stamp_origin(cell)
+                ghost = pygame.Surface((cs, cs), pygame.SRCALPHA)
                 ghost.fill((*ACCENT, 120))
                 for r, c in self.stamp_cells:
-                    self.screen.blit(ghost, ((c0 + c) % COLS * CELL, (r0 + r) % ROWS * CELL))
+                    self.screen.blit(ghost, self.cell_to_screen((sr + r) % ROWS, (sc + c) % COLS))
             else:
-                pygame.draw.rect(self.screen, ACCENT, (cell[1] * CELL, cell[0] * CELL, CELL, CELL), 1)
+                x, y = self.cell_to_screen(*cell)
+                pygame.draw.rect(self.screen, ACCENT, (x, y, cs, cs), 1)
+        self.screen.set_clip(None)
+
+        if cs > ZOOMS[0]:
+            label = f"Zoom {cs / ZOOMS[0]:.2g}x   |   middle-drag or Shift+drag to pan   |   Home to reset"
+            surf = self.small.render(label, True, TEXT)
+            pill = pygame.Rect(10, GRID_H - 34, surf.get_width() + 20, 24)
+            pygame.draw.rect(self.screen, PANEL, pill, border_radius=12)
+            self.screen.blit(surf, (pill.x + 10, pill.y + 3))
 
     def text(self, s, pos, font=None, colour=TEXT, centre=False) -> None:
         surf = (font or self.font).render(s, True, colour)
@@ -407,7 +490,7 @@ class App:
                 continue
             colour = {"h": ACCENT, "m": MUTED, "a": (255, 214, 120)}.get(style, TEXT)
             self.text(line, (110, y), mono, colour)
-            y += 24
+            y += 22
         label = f"v{__version__}"
         self.text(label, (WIN_W - 16 - self.small.size(label)[0], 16), self.small, MUTED)
 
